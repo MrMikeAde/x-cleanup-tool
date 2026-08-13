@@ -18,11 +18,15 @@
  *  Injects a floating panel with buttons to:
  *    - Get Stats        — best-effort read of your profile's post count
  *    - Delete Tweets     — deletes tweets on your Posts tab (skips pinned)
+ *    - Delete Replies    — deletes tweets on your Replies tab
  *    - Unlike All        — unlikes tweets on your Likes tab
  *    - Undo Reposts      — undoes reposts on your Posts tab
  *    - Stop              — halts whatever loop is currently running
+ *    - Minimize (—) / Close (×) — collapse the panel, or close it entirely
+ *      (closing stops any running loop and cleans up; paste the script again
+ *      to reopen)
  *  Includes:
- *    - A confirmation step before Delete Tweets actually starts.
+ *    - A confirmation step before any delete run actually starts.
  *    - Dry Run mode — scans and reports what WOULD happen, without
  *      clicking anything destructive.
  *    - Editable delay range (default random 2-4s between actions).
@@ -33,8 +37,9 @@
  *  1. Go to https://x.com/<your_handle>, open DevTools (F12) > Console.
  *  2. Paste this whole script and press Enter. A panel appears bottom-right.
  *  3. (Recommended) Tick "Dry run" first and try an action to preview it.
- *  4. Navigate to the right tab (Posts for delete/undo-repost, Likes for
- *     unlike), then click the matching button.
+ *  4. Navigate to the right tab (Posts for Delete Tweets/Undo Reposts,
+ *     Replies for Delete Replies, Likes for Unlike All), then click the
+ *     matching button.
  *  5. Click "Stop" any time to halt the current loop.
  *
  * IF SOMETHING BREAKS
@@ -237,7 +242,10 @@
   panel.innerHTML = `
     <div id="cleanup-header" style="background:#1d9bf0;color:#fff;padding:8px 12px;font-weight:bold;cursor:move;display:flex;justify-content:space-between;align-items:center;">
       <span>X Cleanup Tool</span>
-      <span id="cleanup-minimize" style="cursor:pointer;padding:0 4px;">—</span>
+      <span style="display:flex;align-items:center;gap:10px;">
+        <span id="cleanup-minimize" style="cursor:pointer;padding:0 4px;">—</span>
+        <span id="cleanup-close" title="Close panel" style="cursor:pointer;padding:0 4px;font-weight:bold;">×</span>
+      </span>
     </div>
     <div id="cleanup-body" style="padding:10px;">
       <div style="background:#3d2b06;color:#ffd399;border-radius:8px;padding:6px 8px;font-size:11px;line-height:1.4;margin-bottom:10px;">
@@ -260,6 +268,7 @@
       <div style="display:flex;flex-direction:column;gap:6px;">
         <button id="btn-stats" class="cleanup-btn">Get Stats</button>
         <button id="btn-delete" class="cleanup-btn">Delete Tweets</button>
+        <button id="btn-delete-replies" class="cleanup-btn">Delete Replies</button>
         <button id="btn-unlike" class="cleanup-btn">Unlike All</button>
         <button id="btn-unrepost" class="cleanup-btn">Undo Reposts</button>
         <button id="btn-stop" class="cleanup-btn" style="background:#f4212e;">Stop</button>
@@ -308,6 +317,7 @@
   const buttons = {
     stats: panel.querySelector("#btn-stats"),
     delete: panel.querySelector("#btn-delete"),
+    deleteReplies: panel.querySelector("#btn-delete-replies"),
     unlike: panel.querySelector("#btn-unlike"),
     unrepost: panel.querySelector("#btn-unrepost"),
     stop: panel.querySelector("#btn-stop"),
@@ -365,6 +375,7 @@
   function setRunningState(isRunning) {
     state.running = isRunning;
     buttons.delete.disabled = isRunning;
+    buttons.deleteReplies.disabled = isRunning;
     buttons.unlike.disabled = isRunning;
     buttons.unrepost.disabled = isRunning;
     buttons.stats.disabled = isRunning;
@@ -416,6 +427,26 @@
     bodyEl.style.display = bodyEl.style.display === "none" ? "block" : "none";
   });
 
+  // Close/cancel button — stops any running loop and fully removes the panel
+  panel.querySelector("#cleanup-close").addEventListener("click", () => {
+    state.stopFlag = true;
+    panel.remove();
+    style.remove();
+    if (window.__xCleanupTimerWorker) {
+      try {
+        window.__xCleanupTimerWorker.terminate();
+      } catch (e) {
+        /* ignore */
+      }
+      delete window.__xCleanupTimerWorker;
+    }
+    delete window.__xCleanupPanelInstance;
+    console.log(
+      "%cX Cleanup Tool closed. Paste the script again to reopen it.",
+      "color:#71767b;font-weight:bold;"
+    );
+  });
+
   // ---------- ACTIONS ----------
   buttons.stats.addEventListener("click", () => {
     const bodyText = document.body.innerText;
@@ -431,13 +462,13 @@
     setStatus("Stopping after current step...");
   });
 
-  buttons.delete.addEventListener("click", async () => {
+  async function runDeleteFlow(label, tabHint) {
     if (!state.dryRun) {
       const proceed = await showConfirm(
-        "This will permanently delete tweets from your Posts tab, one at a time, starting now. This cannot be undone. Continue?"
+        `This will permanently delete ${label.toLowerCase()} from your ${tabHint} tab, one at a time, starting now. This cannot be undone. Continue?`
       );
       if (!proceed) {
-        setStatus("Delete cancelled. No changes made.");
+        setStatus("Cancelled. No changes made.");
         return;
       }
     }
@@ -447,7 +478,7 @@
     resetReport();
     setRunningState(true);
     setStatus(
-      `Starting: Delete Tweets${state.dryRun ? " (dry run)" : ""}\nMake sure you're on your Posts tab.`
+      `Starting: ${label}${state.dryRun ? " (dry run)" : ""}\nMake sure you're on your ${tabHint} tab.`
     );
     let emptyScans = 0;
     const dryRunProcessed = new Set();
@@ -472,7 +503,7 @@
         const key = getStatusKey(candidate);
         if (state.dryRun && key) dryRunProcessed.add(key);
         else candidate.style.opacity = "0.3"; // visually deprioritize; will scroll past
-        setStatus(reportLine("Delete Tweets"));
+        setStatus(reportLine(label));
         if (!state.dryRun) await scrollToLoadMore();
         continue;
       }
@@ -484,7 +515,7 @@
         if (key) dryRunProcessed.add(key);
         state.report.wouldDelete++;
         recordSuccess();
-        setStatus(reportLine("Delete Tweets"));
+        setStatus(reportLine(label));
         await randomDelay();
         continue;
       }
@@ -495,7 +526,7 @@
           state.report.skipped++;
           candidate.style.opacity = "0.3";
           await scrollToLoadMore();
-          setStatus(reportLine("Delete Tweets"));
+          setStatus(reportLine(label));
           continue;
         }
         await clickAndWait(moreBtn, 400);
@@ -508,32 +539,35 @@
         if (!deleteItem) {
           state.report.skipped++;
           document.body.click();
-          setStatus(reportLine("Delete Tweets"));
+          setStatus(reportLine(label));
           await randomDelay();
           continue;
         }
 
-        await clickAndWait(deleteItem, 5000);
+        await clickAndWait(deleteItem, 500);
         const confirmBtn = document.querySelector(SELECTORS.confirmDeleteButton);
         if (confirmBtn) {
-          await clickAndWait(confirmBtn, 5000);
+          await clickAndWait(confirmBtn, 500);
           state.report.deleted++;
           recordSuccess();
         } else {
           recordFailure();
         }
       } catch (err) {
-        console.error("Error deleting tweet:", err);
+        console.error(`Error deleting (${label}):`, err);
         recordFailure();
       }
 
-      setStatus(reportLine("Delete Tweets"));
+      setStatus(reportLine(label));
       await randomDelay();
     }
 
     setRunningState(false);
-    setStatus(reportLine(state.stopFlag ? "Stopped: Delete Tweets" : "Finished: Delete Tweets"));
-  });
+    setStatus(reportLine(state.stopFlag ? `Stopped: ${label}` : `Finished: ${label}`));
+  }
+
+  buttons.delete.addEventListener("click", () => runDeleteFlow("Delete Tweets", "Posts"));
+  buttons.deleteReplies.addEventListener("click", () => runDeleteFlow("Delete Replies", "Replies"));
 
   buttons.unlike.addEventListener("click", async () => {
     state.stopFlag = false;
