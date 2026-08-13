@@ -513,10 +513,10 @@
           continue;
         }
 
-        await clickAndWait(deleteItem, 500);
+        await clickAndWait(deleteItem, 5000);
         const confirmBtn = document.querySelector(SELECTORS.confirmDeleteButton);
         if (confirmBtn) {
-          await clickAndWait(confirmBtn, 500);
+          await clickAndWait(confirmBtn, 5000);
           state.report.deleted++;
           recordSuccess();
         } else {
